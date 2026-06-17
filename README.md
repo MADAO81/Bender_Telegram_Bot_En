@@ -55,7 +55,7 @@ Bender instantly reacts to these words:
 ## 📁 Project Structure
 
 ```text
-bender-telegram-bot-en/
+bender_telegram_bot_en/
 ├── bender_bot.py              # Main bot code
 ├── jokes/                     # Modules
 │   ├── __init__.py
@@ -72,7 +72,7 @@ bender-telegram-bot-en/
 🚀 Quick Start
 1. Clone the repository
 bash
-git clone https://github.com/your-username/bender-telegram-bot-en.git
+git clone https://github.com/MADAO81/Bender_Telegram_Bot_En.git
 cd bender-telegram-bot-en
 2. Install dependencies
 bash
