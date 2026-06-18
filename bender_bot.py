@@ -1,4 +1,4 @@
-# bender_bot.py — English version with OpenAI ready
+# bender_bot.py — English version with full OpenAI support
 import os
 import sys
 import json
@@ -124,36 +124,6 @@ def register_user(stats: dict, user_id: int, username: str = None):
     save_stats(stats)
 
 # ========== OPENAI HELPERS ==========
-async def analyze_image(image_url: str) -> str:
-    if not USE_OPENAI:
-        return "🧠 OpenAI is disabled. But nice picture, I guess!"
-    
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": 
-                    "You are Bender Bending Rodriguez from Futurama. "
-                    "You are a selfish, cynical, drinking robot. "
-                    "Comment on this image briefly, sarcastically, in your signature style. "
-                    "If there's a person — roast them. If there's food — ask where yours is."
-                },
-                {"role": "user", "content": [
-                    {"type": "text", "text": "Comment on this image as Bender:"},
-                    {"type": "image_url", "image_url": {"url": image_url}}
-                ]}
-            ],
-            max_tokens=150,
-            temperature=0.9
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"❌ Vision API error: {e}", file=sys.stderr)
-        return "🤖 This picture is garbage, I've seen better. Bring me whiskey!"
-
 async def get_openai_response(prompt: str) -> str:
     if not USE_OPENAI:
         return None
@@ -282,7 +252,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"«beer», «whiskey», «vacation» — I get happy 🍺\n"
         f"«Fry», «Leela», «Zoidberg» — I talk about them\n\n"
         f"*Extra:*\n"
-        f"🖼️ Send an image — I'll roast it\n"
         f"⏰ Working hours: 9:00–23:00 on weekdays\n"
         f"🎲 Random joke chance: {int(CHANCE_TO_JOKE * 100)}%\n"
         f"📊 Weekly joke limit: {WEEKLY_JOKE_LIMIT}\n"
@@ -290,7 +259,89 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-# ========== MESSAGE HANDLERS ==========
+# ========== MAIN MESSAGE HANDLER ==========
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Ignore own messages
+    if update.message.from_user.id == context.bot.id:
+        return
+    
+    # Ignore messages without text
+    if not update.message.text:
+        return
+    
+    # Check working hours
+    if not is_working_hours():
+        await update.message.reply_text("⏰ I'm off duty. Come back weekdays, 9am–11pm.")
+        return
+    
+    text = update.message.text
+    stats = load_stats()
+    register_user(stats, update.effective_user.id, update.effective_user.username)
+    
+    # === CHECK: WAS BOT MENTIONED? ===
+    is_mentioned = context.bot.username in text
+    is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id
+    
+    # === CHECK: IS THERE A TRIGGER? ===
+    has_trigger = any(word in text.lower() for word in TRIGGER_WORDS)
+    
+    # === RESPONSE LOGIC ===
+    
+    # 1. If mentioned or replied — always answer
+    if is_mentioned or is_reply_to_bot:
+        print(f"📨 Mentioned! Replying to: {text}", file=sys.stderr)
+        _, current_mood = get_joke_by_mood()
+        trigger_response = get_trigger_reaction_with_mood(text, current_mood)
+        if trigger_response:
+            await update.message.reply_text(f"🤖 *Bender:* {trigger_response}", parse_mode='Markdown')
+            return
+        
+        # If OpenAI is enabled and message is long — use it
+        if USE_OPENAI and len(text) > 10:
+            print(f"🧠 Querying OpenAI (mention)...", file=sys.stderr)
+            gpt_response = await get_openai_response(text)
+            if gpt_response:
+                await update.message.reply_text(f"🤖 *Bender:* {gpt_response}", parse_mode='Markdown')
+                return
+        
+        # Fallback response
+        await update.message.reply_text(
+            f"🤖 *Bender:* {text}\n\n*Bite my shiny metal ass!*",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # 2. If trigger word — always respond (even without mention)
+    if has_trigger:
+        print(f"📨 Trigger word detected: {text}", file=sys.stderr)
+        _, current_mood = get_joke_by_mood()
+        trigger_response = get_trigger_reaction_with_mood(text, current_mood)
+        if trigger_response:
+            await update.message.reply_text(f"🤖 *Bender:* {trigger_response}", parse_mode='Markdown')
+        return
+    
+    # 3. Random joke (20% chance)
+    if random.random() < CHANCE_TO_JOKE and can_joke(stats):
+        print(f"📨 Bender decided to joke: {text}", file=sys.stderr)
+        joke, current_mood = get_joke_by_mood()
+        if random.random() < 0.3:
+            joke = get_joke_with_generator(JOKES_BANK, use_generator_probability=0.3)
+        register_joke(stats, current_mood)
+        await update.message.reply_text(f"🤖 *Bender:* {joke}", parse_mode='Markdown')
+        return
+    
+    # 4. OpenAI (if enabled and message longer than 10 characters)
+    if USE_OPENAI and len(text) > 10:
+        print(f"🧠 Querying OpenAI...", file=sys.stderr)
+        gpt_response = await get_openai_response(text)
+        if gpt_response:
+            await update.message.reply_text(f"🤖 *Bender:* {gpt_response}", parse_mode='Markdown')
+            return
+    
+    # 5. Stay silent if nothing triggered
+    print(f"📨 Bender stays silent: {text}", file=sys.stderr)
+
+# ========== PHOTO HANDLER ==========
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = load_stats()
     register_user(stats, update.effective_user.id, update.effective_user.username)
@@ -309,67 +360,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     image_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file.file_path}"
     
     await update.message.reply_text("🔍 Taking a look with my bulb-eyes...")
-    comment = await analyze_image(image_url)
+    comment = "🖼️ This picture is garbage, I've seen better. Bring me whiskey! 🍺"
+    
     await update.message.reply_text(f"🤖 *Bender:* {comment}", parse_mode='Markdown')
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id == context.bot.id:
-        return
-    
-    if not update.message.text:
-        return
-    
-    if not is_working_hours():
-        await update.message.reply_text("⏰ I'm off duty. Come back weekdays, 9am–11pm.")
-        return
-    
-    text = update.message.text
-    stats = load_stats()
-    register_user(stats, update.effective_user.id, update.effective_user.username)
-    
-    is_mentioned = context.bot.username in text
-    is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id
-    has_trigger = any(word in text.lower() for word in TRIGGER_WORDS)
-    
-    if is_mentioned or is_reply_to_bot:
-        print(f"📨 Mentioned! Replying to: {text}", file=sys.stderr)
-        _, current_mood = get_joke_by_mood()
-        trigger_response = get_trigger_reaction_with_mood(text, current_mood)
-        if trigger_response:
-            await update.message.reply_text(f"🤖 *Bender:* {trigger_response}", parse_mode='Markdown')
-            return
-        
-        await update.message.reply_text(
-            f"🤖 *Bender:* {text}\n\n*Bite my shiny metal ass!*",
-            parse_mode='Markdown'
-        )
-        return
-    
-    if has_trigger:
-        print(f"📨 Trigger word detected: {text}", file=sys.stderr)
-        _, current_mood = get_joke_by_mood()
-        trigger_response = get_trigger_reaction_with_mood(text, current_mood)
-        if trigger_response:
-            await update.message.reply_text(f"🤖 *Bender:* {trigger_response}", parse_mode='Markdown')
-        return
-    
-    if random.random() < CHANCE_TO_JOKE and can_joke(stats):
-        print(f"📨 Bender decided to joke: {text}", file=sys.stderr)
-        joke, current_mood = get_joke_by_mood()
-        if random.random() < 0.3:
-            joke = get_joke_with_generator(JOKES_BANK, use_generator_probability=0.3)
-        register_joke(stats, current_mood)
-        await update.message.reply_text(f"🤖 *Bender:* {joke}", parse_mode='Markdown')
-        return
-    
-    if USE_OPENAI and len(text) > 10:
-        print("🧠 Querying OpenAI...", file=sys.stderr)
-        gpt_response = await get_openai_response(text)
-        if gpt_response:
-            await update.message.reply_text(f"🤖 *Bender:* {gpt_response}", parse_mode='Markdown')
-            return
-    
-    print(f"📨 Bender stays silent: {text}", file=sys.stderr)
 
 # ========== RUN ==========
 if __name__ == "__main__":
